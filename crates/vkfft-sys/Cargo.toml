@@ -9,8 +9,14 @@ description = "Rust bindings for VkFFT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["vendored"]
+vendored = ["cmake"]
+
+
 [dependencies]
 
 [build-dependencies]
 bindgen = "0.58"
 cc = "1.0"
+cmake = {version = "0.1.50", optional=true}

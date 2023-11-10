@@ -10,7 +10,7 @@ fn build_lib<O, LD, L, const N: usize, const M: usize>(out_dir: O, library_dirs:
 where
   O: AsRef<Path>,
   LD: Iterator,
-  LD::Item: AsRef<str>,
+  LD::Item: AsRef<Path>,
   L: Iterator,
   L::Item: AsRef<str>
 {
@@ -24,7 +24,7 @@ where
     .flag("-w");
 
   for library_dir in library_dirs {
-    build.flag(format!("-L{}", library_dir.as_ref()).as_str());
+    build.flag(format!("-L{}", library_dir.as_ref().display()).as_str());
   }
 
   for library in libraries {
@@ -47,6 +47,14 @@ where
   build.compile("vkfft");
 
   Ok(())
+}
+
+#[cfg(feature = "vendored")]
+fn build_vkfft() -> PathBuf {
+  let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/VkFFT/");
+  println!("cargo:rerun-if-changed={}", dir.display());
+  let dst = cmake::build(dir);
+  dst
 }
 
 fn gen_wrapper<F, const N: usize, const M: usize>(file: F,  defines: &[(&str, &str); N], include_dirs: &[String; M]) -> Result<Bindings, Box<dyn Error>>
@@ -109,16 +117,40 @@ where
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-  let vkfft_root = std::env::var("VKFFT_ROOT")?;
+  let vkfft_root = std::env::var("VKFFT_ROOT");
   let out_dir = std::env::var("OUT_DIR")?;
   let out_dir = PathBuf::from(out_dir);
 
-  let library_dirs = [
-    format!("{}/build/glslang-main/glslang", vkfft_root),
-    format!("{}/build/glslang-main/glslang/OSDependent/Unix", vkfft_root),
-    format!("{}/build/glslang-main/glslang/OGLCompilersDLL", vkfft_root),
-    format!("{}/build/glslang-main/SPIRV", vkfft_root),
-  ];
+  #[cfg(not(feature = "vendored"))]
+  let library_dirs = {
+    let vkfft_root = vkfft_root?;
+    [
+      format!("{}/build/glslang-main/glslang", vkfft_root),
+      format!("{}/build/glslang-main/glslang/OSDependent/Unix", vkfft_root),
+      format!("{}/build/glslang-main/glslang/OGLCompilersDLL", vkfft_root),
+      format!("{}/build/glslang-main/SPIRV", vkfft_root),
+    ]
+  };
+
+  #[cfg(feature = "vendored")]
+  let (library_dirs, vkfft_root) = {
+    let vkfft_libroot = if let Ok(ref r) = vkfft_root {
+      PathBuf::from(format!("{r}/build"))
+    } else {
+      build_vkfft()
+    };
+    let vkfft_root = if let Ok(r) = vkfft_root {
+      PathBuf::from(r)
+    } else {
+      PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/VkFFT/")
+    };
+    ([
+      vkfft_libroot.join("glslang-main/glslang"),
+      vkfft_libroot.join("glslang-main/glslang/OSDependent/Unix"),
+      vkfft_libroot.join("glslang-main/OGLCompilersDLL"),
+      vkfft_libroot.join("glslang-main/SPIRV"),
+    ], vkfft_root)
+  };
 
   let libraries = [
     "glslang",
@@ -131,7 +163,7 @@ fn main() -> Result<(), Box<dyn Error>> {
   ];
 
   for library_dir in library_dirs.iter() {
-    println!("cargo:rustc-link-search={}", library_dir);
+    println!("cargo:rustc-link-search={}", library_dir.display());
   }
 
   for library in libraries.iter() {
@@ -143,8 +175,8 @@ fn main() -> Result<(), Box<dyn Error>> {
   println!("cargo:rerun-if-changed=build.rs");
 
   let include_dirs = [
-    format!("{}/vkFFT", &vkfft_root),
-    format!("{}/glslang-main/glslang/Include", vkfft_root)
+    format!("{}", vkfft_root.join("vkFFT").display()),
+    format!("{}", vkfft_root.join("glslang-main/glslang/Include").display())
   ];
 
   let defines = [
@@ -152,7 +184,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     ("VK_API_VERSION", "11")
   ];
 
-  let wrapper = std::fs::read_to_string(format!("{}/vkFFT/vkFFT.h", vkfft_root))?
+  let wrapper = std::fs::read_to_string(vkfft_root.join("vkFFT/vkFFT.h"))
+    .map_err(|e| format!("couldn't read {}: {e}", vkfft_root.join("vkFFT/vkFFT.h").display()))?
     .replace("static inline", "");
 
   let rw = out_dir.join("vkfft_rw.hpp");
